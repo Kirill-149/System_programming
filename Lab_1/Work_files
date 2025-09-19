@@ -1,0 +1,48 @@
+1:
+mkdir Work
+cd Work
+mkdir "Лабораторная работа №1!"
+mkdir "Бусаров Кирилл Денисович"
+2:
+chmod 774 "Лабораторная работа №1!"
+chmod 200 "Бусаров Кирилл Денисович"
+3:
+touch 'Text @1'
+touch 'Text $2'
+touch 'Text #3'
+4:
+cat > "Text @1" << EOF
+Птица говорун отличается умом и сообразительностью!
+Отличается умом, отличается сообразительностью...
+EOF
+5:
+cp 'Text @1' 'Text $2'
+6:
+mv 'Text $2' "Лабораторная работа №1!"
+sudo cp 'Text @1' "Бусаров Кирилл Денисович"
+7:
+gzip "Text @1"
+gzip "Text #3"
+tar -cf "MyAchiv.tar" "Text @1.gz" "Text #3.gz"
+gzip -d "Text @1.gz"
+gzip -d "Text #3.gz"
+8:
+head -n 1 "Text @1" > temp_file
+cat "Text #3" >> temp_file
+mv temp_file "Text #3"
+echo "Будь осторожен! Преступник вооружен!" >> "Text #3"
+9:
+sudo touch "Бусаров Кирилл Денисович"/Result_one
+sudo chmod +rwx "Бусаров Кирилл Денисович"
+sudo chmod +rwx "Бусаров Кирилл Денисович/Result_one"
+rev "Text @1" > "Бусаров Кирилл Денисович"/Result_one
+sudo chmod -wx "Бусаров Кирилл Денисович"
+sudo chmod -wx "Бусаров Кирилл Денисович"/Result_one
+10:
+sudo mv "Бусаров Кирилл Денисович"/Result_one "Бусаров Кирилл Денисович"/Result_two
+11:
+touch "Лабораторная работа №1!"/Result_3
+sudo find "Бусаров Кирилл Денисович" -name "T*" -type f -exec cat {} \; > "Лабораторная работа №1!"/Result_3
+12:
+uname -a >> "Лабораторная работа №1!"/Result_3
+date >> "Лабораторная работа №1!"/Result_3
