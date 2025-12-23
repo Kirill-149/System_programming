@@ -1,4 +1,3 @@
-; server.asm - сервер морского боя
 format ELF64
 public _start
 
@@ -111,7 +110,6 @@ exit:
     xor rdi, rdi        ; код 0
     syscall
 
-; Точка входа
 _start:
     ; Вывод сообщения о запуске
     mov rsi, msg_start

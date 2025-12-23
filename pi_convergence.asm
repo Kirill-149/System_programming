@@ -1,4 +1,3 @@
-; pi_convergence.asm
 format ELF64
 public _start
 
@@ -100,7 +99,7 @@ compute_series1:
         mulsd xmm0, xmm1
         addsd xmm0, [series1_pi]
 
-        ; Проверяем изменение с истинным π
+        ; Проверяем изменение с истинным pi
         movsd xmm1, [true_pi]
         subsd xmm1, xmm0
         movsd [series1_pi], xmm0
@@ -158,12 +157,12 @@ compute_series2:
         addsd xmm1, [sum_series2]
         movsd [sum_series2], xmm1
 
-        ; Вычисляем π
+        ; Вычисляем pi
         movsd xmm0, xmm1
         mulsd xmm0, [six]
         sqrtsd xmm0, xmm0
 
-        ; Проверяем ошибку с истинным π
+        ; Проверяем ошибку с истинным pi
         movsd xmm1, [true_pi]
         subsd xmm1, xmm0
         movsd [series2_pi], xmm0
