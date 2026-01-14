@@ -1,216 +1,105 @@
-format ELF64 executable 3
-entry _start
+format ELF64
+public _start
 
-segment readable writeable
-    ; Константы
-    SYS_EXIT    = 60
-    SYS_FORK    = 57
-    SYS_EXECVE  = 59
-    SYS_WRITE   = 1
-    SYS_READ    = 0
-    SYS_WAITPID = 61
+section '.data' writeable
+    prompt db "Введите команду (например, ./lab5): ", 0
+    prompt_len = $ - prompt
 
-    STDIN       = 0
-    STDOUT      = 1
+    error_msg db "Ошибка: не удалось запустить программу", 10, 0
+    error_len = $ - error_msg
 
-    ; Сообщения
-    prompt      db 'shell> ', 0
-    prompt_len  = $-prompt
+    input_buffer rb 256
 
-    newline     db 10
-    error_msg   db 'Ошибка выполнения команды', 10, 0
-    error_len   = $-error_msg
+    ; argv[0] - имя файла, argv[1] - NULL
+    argv dq 0, 0
 
-    ; Буферы
-    cmd_buffer  rb 256        ; Буфер для команды
-    args        rq 64         ; Массив аргументов (макс 64 аргумента)
+    ; Сюда сохраним настоящий указатель на окружение
+    envp_addr dq 0
 
-segment readable executable
+    status dd 0
 
-; Точка входа
+section '.text' executable
 _start:
-    mov rbp, rsp
+    ; Получаем указатель на переменные окружения со стека.
+    ; Структура стека при старте: [argc] [argv0] ... [argvN] [NULL] [envp0] ...
+
+    pop rcx                 ; RCX = argc. Теперь RSP указывает на argv[0]
+
+    ; Нам нужно перепрыгнуть через весь массив argv, чтобы найти envp.
+    ; Размер argv = (argc * 8) байт + 8 байт (завершающий NULL).
+    ; Адрес envp = RSP + (RCX * 8) + 8
+
+    lea rdi, [rsp + rcx*8 + 8]
+    mov [envp_addr], rdi    ; Сохраняем найденный адрес массива окружения
 
 main_loop:
     ; Вывод приглашения
-    mov rax, SYS_WRITE
-    mov rdi, STDOUT
+    mov rax, 1              ; sys_write
+    mov rdi, 1              ; stdout
     lea rsi, [prompt]
     mov rdx, prompt_len
     syscall
 
-    ; Чтение команды
-    mov rax, SYS_READ
-    mov rdi, STDIN
-    lea rsi, [cmd_buffer]
-    mov rdx, 256
+    ; Чтение ввода
+    mov rax, 0              ; sys_read`
+    mov rdi, 0              ; stdin
+    lea rsi, [input_buffer]
+    mov rdx, 255
     syscall
 
-    ; Проверка на EOF (Ctrl+D)
-    cmp rax, 0
-    jle exit_program
+    ; Если нажали только Enter (1 байт), повторить
+    cmp rax, 1
+    jle main_loop
 
-    ; Замена перевода строки на 0
-    lea rdi, [cmd_buffer]
-    add rdi, rax
-    dec rdi
-    cmp byte [rdi], 10
-    jne .no_newline
-    mov byte [rdi], 0
+    ; Замена \n на 0
+    mov byte [input_buffer + rax - 1], 0
 
-.no_newline:
-    ; Проверка на пустую команду
-    lea rsi, [cmd_buffer]
-    cmp byte [rsi], 0
-    je main_loop
+    ; Fork
+    mov rax, 57             ; sys_fork
+    syscall
 
-    ; Проверка на команду выхода
-    mov rdi, cmd_buffer
-    call check_exit_command
     test rax, rax
-    jnz exit_program
+    js fork_error       ; если rax < 0
+    jz child_process    ; если rax == 0
 
-    ; Запуск команды
-    call execute_command
-    jmp main_loop
+    ; Родитель
+    jmp parent_process
 
-; Проверка команды выхода (exit или quit)
-check_exit_command:
-    ; Проверка "exit"
-    lea rsi, [exit_str]
-    call strcmp
-    test rax, rax
-    jz .exit_found
+child_process:
+    ; Подготовка аргументов
+    lea rbx, [input_buffer]
+    mov [argv], rbx         ; argv[0] = имя файла
 
-    ; Проверка "quit"
-    lea rsi, [quit_str]
-    call strcmp
-    ret
+    mov rax, 59             ; sys_execve
+    lea rdi, [input_buffer] ; filename
+    lea rsi, [argv]         ; argv
 
-.exit_found:
+    ; Мы берем значение, которое сохранили в envp_addr
+    mov rdx, [envp_addr]    ; envp (передаем системное окружение: TERM, PATH и т.д.)
+    syscall
+
+    ; Обработка ошибки execve
     mov rax, 1
-    ret
-
-exit_str db 'exit', 0
-quit_str db 'quit', 0
-
-; Сравнение строк
-strcmp:
-    mov al, [rdi]
-    cmp al, [rsi]
-    jne .not_equal
-    test al, al
-    jz .equal
-    inc rdi
-    inc rsi
-    jmp strcmp
-
-.equal:
-    xor rax, rax
-    ret
-
-.not_equal:
-    mov rax, 1
-    ret
-
-; Разбор команды на аргументы
-parse_arguments:
-    lea rsi, [cmd_buffer]
-    lea rdi, [args]
-    xor rcx, rcx            ; Счетчик аргументов
-
-.skip_spaces:
-    lodsb
-    test al, al
-    jz .done
-    cmp al, ' '
-    je .skip_spaces
-
-    ; Нашли начало аргумента
-    dec rsi
-    mov [rdi], rsi
-    add rdi, 8
-    inc rcx
-
-.find_end:
-    lodsb
-    test al, al
-    jz .done
-    cmp al, ' '
-    jne .find_end
-
-    ; Конец аргумента
-    mov byte [rsi-1], 0
-    jmp .skip_spaces
-
-.done:
-    mov qword [rdi], 0      ; NULL в конце массива
-    mov rax, rcx            ; Возвращаем количество аргументов
-    ret
-
-; Выполнение команды
-execute_command:
-    ; Разбор аргументов
-    call parse_arguments
-    test rax, rax
-    jz .invalid_command
-
-    ; Сохранение количества аргументов
-    push rax
-
-    ; Создание дочернего процесса
-    mov rax, SYS_FORK
-    syscall
-
-    test rax, rax
-    jz .child_process       ; В дочернем процессе
-
-    ; Родительский процесс
-    pop rbx                 ; Восстановление количества аргументов
-
-    ; Ожидание завершения дочернего процесса
-    push rax                ; Сохраняем PID
-    mov rdi, rax            ; PID
-    xor rsi, rsi            ; status
-    xor rdx, rdx            ; options
-    mov r10, 0              ; rusage
-    mov rax, SYS_WAITPID
-    syscall
-
-    pop rdi                 ; Восстанавливаем PID
-    ret
-
-.child_process:
-    ; В дочернем процессе
-    pop rbx                 ; Восстановление количества аргументов
-
-    ; Подготовка аргументов для execve
-    lea rdi, [args]
-    mov rsi, [rdi]          ; Путь к исполняемому файлу
-    lea rdx, [args]         ; Массив аргументов
-    xor rcx, rcx            ; Окружение (NULL)
-
-    ; Вызов execve
-    mov rax, SYS_EXECVE
-    syscall
-
-    ; Если execve вернул ошибку
-    mov rax, SYS_WRITE
-    mov rdi, STDOUT
+    mov rdi, 1
     lea rsi, [error_msg]
     mov rdx, error_len
     syscall
 
-    ; Завершение дочернего процесса
-    mov rax, SYS_EXIT
+    mov rax, 60             ; sys_exit
     mov rdi, 1
     syscall
 
-.invalid_command:
-    ret
-
-; Завершение программы
-exit_program:
-    mov rax, SYS_EXIT
-    xor rdi, rdi
+parent_process:
+    ; Ожидание
+    mov rdi, rax            ; PID
+    mov rax, 61             ; sys_wait4
+    lea rsi, [status]
+    mov rdx, 0
+    mov r10, 0
     syscall
+
+    ; Возвращаемся в начало цикла
+    jmp main_loop
+
+fork_error:
+    jmp main_loop           ; При ошибке fork тоже лучше вернуться в цикл
