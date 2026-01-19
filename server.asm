@@ -1,330 +1,467 @@
 format ELF64
 public _start
 
-; Константы
-AF_INET = 2
-SOCK_STREAM = 1
-SOL_SOCKET = 1
-SO_REUSEADDR = 2
-INADDR_ANY = 0
-PORT_NET = 0x3d9  ; 5555 в сетевом порядке
+SYS_WRITE       = 1
+SYS_CLOSE       = 3
+SYS_SOCKET      = 41
+SYS_ACCEPT      = 43
+SYS_BIND        = 49
+SYS_LISTEN      = 50
+SYS_EXIT        = 60
 
-; Системные вызовы
-SYS_SOCKET = 41
-SYS_BIND = 49
-SYS_LISTEN = 50
-SYS_ACCEPT = 43
-SYS_CLOSE = 3
-SYS_READ = 0
-SYS_WRITE = 1
-SYS_EXIT = 60
-SYS_SETSOCKOPT = 54
+AF_INET         = 2
+SOCK_STREAM     = 1
+INADDR_ANY      = 0
 
 section '.data' writeable
-    msg_start       db 'Сервер запущен. Порт: 5555',0xA,0
-    msg_wait        db 'Ожидание игрока...',0xA,0
-    msg_connect     db 'Игрок подключился! Ход сервера.',0xA,0
-    msg_turn        db 'Ваш ход (A1-J10): ',0
-    msg_hit         db 'Попадание!',0xA,0
-    msg_miss        db 'Промах!',0xA,0
-    msg_error       db 'Ошибка привязки сокета',0xA,0
-    msg_listen      db 'Ошибка прослушивания',0xA,0
-    msg_accept      db 'Ошибка принятия соединения',0xA,0
-    msg_wait_opp    db 'Ожидание хода противника...',0xA,0
-    msg_opp_move    db 'Противник сделал ход: ',0
-    msg_client_quit db 'Клиент отключился',0xA,0
-    msg_quit        db 'Завершение работы сервера',0xA,0
-    msg_you_win     db 'Вы выиграли!',0xA,0
-    msg_you_lose    db 'Вы проиграли!',0xA,0
-    msg_game_over   db 'Игра завершена',0xA,0
-    newline         db 0xA,0
+    notify_ready    db '[Server started on port 5555]', 10, 0
+    notify_player   db '[New connection]', 10, 0
 
-    sock_fd   dq 0
-    client_fd dq 0
-    buffer    rb 100
-    optval    dd 1
+    buffer_in       rb 256
+    buffer_out      rb 1024
 
-    ; Структура sockaddr_in
-    srv_addr:
-        .sin_family dw AF_INET
-        .sin_port   dw PORT_NET
-        .sin_addr   dd INADDR_ANY
-        .sin_zero   dq 0
+    host_address:
+        dw AF_INET
+        db 0x15, 0xB3    ; Порт 5555 (0xB315 в сетевом порядке байт)
+        dd INADDR_ANY
+        dq 0
 
-    client_addr rb 16
-    addrlen     dd 16
+    main_socket     dq 0
+    game_socket     dq 0
+
+    challenger_pts  dq 0
+    host_pts        dq 0
+
+    challenger_cards rb 20
+    challenger_count dq 0
+
+    host_cards      rb 20
+    host_count      dq 0
+
+    deck_pointer    dq 0
+    rand_seed       dq 987654321
+
+    face_symbols    db '2','3','4','5','6','7','8','9','X','V','Q','K','A'
+
+    card_strength   db 2,2,2,2, 3,3,3,3, 4,4,4,4, 5,5,5,5, 6,6,6,6, 7,7,7,7, 8,8,8,8, 9,9,9,9
+                    db 10,10,10,10
+                    db 10,10,10,10
+                    db 10,10,10,10
+                    db 10,10,10,10
+                    db 10,10,10,10
+
+    shuffled_deck   db 52 dup(0)
 
 section '.text' executable
-
-; Функция вывода строки
-print_str:
-    ; rsi = указатель на строку
-    push rcx
-    push rdx
-    push rdi
-    push rax
-
-    xor rcx, rcx
-.find_end:
-    cmp byte [rsi + rcx], 0
-    je .found_end
-    inc rcx
-    jmp .find_end
-.found_end:
-
-    mov rax, 1          ; sys_write
-    mov rdi, 1          ; stdout
-    mov rdx, rcx        ; длина
-    syscall
-
-    pop rax
-    pop rdi
-    pop rdx
-    pop rcx
-    ret
-
-; Ввод с клавиатуры
-input_keyboard:
-    ; rsi = буфер
-    push rdx
-    push rdi
-
-    mov rax, 0          ; sys_read
-    mov rdi, 0          ; stdin
-    mov rdx, 100        ; размер
-    syscall
-
-    ; Заменяем \n на 0
-    cmp rax, 0
-    jle .no_input
-    mov byte [rsi + rax - 1], 0
-
-.no_input:
-    pop rdi
-    pop rdx
-    ret
-
-; Выход из программы
-exit:
-    mov rax, 60         ; sys_exit
-    xor rdi, rdi        ; код 0
-    syscall
-
 _start:
-    ; Вывод сообщения о запуске
-    mov rsi, msg_start
-    call print_str
+    mov rcx, 52
+    xor rax, rax
+.init_deck:
+    mov [shuffled_deck + rax], al
+    inc rax
+    loop .init_deck
 
-    ; Создание сокета
+    mov rax, SYS_SOCKET
     mov rdi, AF_INET
     mov rsi, SOCK_STREAM
     mov rdx, 0
-    mov rax, SYS_SOCKET
     syscall
+    mov [main_socket], rax
 
-    cmp rax, 0
-    jl .bind_error
-    mov [sock_fd], rax
-
-    ; Установка SO_REUSEADDR для повторного использования порта
-    mov rdi, [sock_fd]
-    mov rsi, SOL_SOCKET
-    mov rdx, SO_REUSEADDR
-    mov r10, optval
-    mov r8, 4
-    mov rax, SYS_SETSOCKOPT
-    syscall
-
-    ; Привязка сокета
-    mov rdi, [sock_fd]
-    mov rsi, srv_addr
-    mov rdx, 16
     mov rax, SYS_BIND
+    mov rdi, [main_socket]
+    mov rsi, host_address
+    mov rdx, 16
     syscall
 
-    cmp rax, 0
-    jl .bind_error
-
-    ; Прослушивание
-    mov rdi, [sock_fd]
-    mov rsi, 5
     mov rax, SYS_LISTEN
+    mov rdi, [main_socket]
+    mov rsi, 1
     syscall
 
-    cmp rax, 0
-    jl .listen_error
+    mov rsi, notify_ready
+    call output_message
 
-    ; Основной цикл ожидания подключений
-.main_loop:
-    mov rsi, msg_wait
-    call print_str
-
-    ; Принятие подключения
-    mov rdi, [sock_fd]
-    mov rsi, client_addr
-    mov rdx, addrlen
+accept_cycle:
     mov rax, SYS_ACCEPT
+    mov rdi, [main_socket]
+    mov rsi, 0
+    mov rdx, 0
+    syscall
+    mov [game_socket], rax
+
+    mov rsi, notify_player
+    call output_message
+
+session_start:
+    mov qword [challenger_pts], 0
+    mov qword [host_pts], 0
+    mov qword [deck_pointer], 0
+
+    mov qword [challenger_count], 0
+    mov qword [host_count], 0
+
+    call shuffle_cards
+
+    mov rdi, 0
+    call draw_card
+    mov rdi, 0
+    call draw_card
+
+    mov rdi, 1
+    call draw_card
+    mov rdi, 1
+    call draw_card
+
+    cmp qword [challenger_pts], 20
+    je verify_host_blackjack
+
+    call display_hidden_state
+    jmp game_cycle
+
+game_cycle:
+    mov rax, 0
+    mov rdi, [game_socket]
+    mov rsi, buffer_in
+    mov rdx, 255
     syscall
 
     cmp rax, 0
-    jl .accept_error
-    mov [client_fd], rax
+    jle terminate_session
 
-    mov rsi, msg_connect
-    call print_str
+    mov al, byte [buffer_in]
 
-    ; Игровой цикл
-    call play_game
+    cmp al, '1'
+    je request_card
 
-    ; Закрытие клиентского сокета
-    mov rdi, [client_fd]
-    cmp rdi, 0
-    je .clear_client_fd
+    cmp al, '2'
+    je freeze_turn
+
+    jmp terminate_session
+
+request_card:
+    mov rdi, 0
+    call draw_card
+    cmp qword [challenger_pts], 21
+    jg challenger_busted
+    call display_hidden_state
+    jmp game_cycle
+
+freeze_turn:
+host_move:
+    cmp qword [host_pts], 17
+    jge host_finished
+    mov rdi, 1
+    call draw_card
+    jmp host_move
+
+host_finished:
+    mov rax, [host_pts]
+    cmp rax, 21
+    jg challenger_victory
+    mov rbx, [challenger_pts]
+    cmp rbx, rax
+    jg challenger_victory
+    jl challenger_defeat
+    je match_draw
+
+challenger_busted:
+    mov rdi, buffer_out
+    call message_busted
+    jmp finalize_round
+
+challenger_victory:
+    mov rdi, buffer_out
+    call message_victory
+    jmp finalize_round
+
+challenger_defeat:
+    mov rdi, buffer_out
+    call message_defeat
+    jmp finalize_round
+
+match_draw:
+    mov rdi, buffer_out
+    call message_draw
+    jmp finalize_round
+
+finalize_round:
+    mov rsi, buffer_out
+    call transmit_output
+    jmp terminate_session
+
+terminate_session:
     mov rax, SYS_CLOSE
+    mov rdi, [game_socket]
     syscall
+    jmp accept_cycle
 
-.clear_client_fd:
-    mov qword [client_fd], 0
-    jmp .main_loop
+verify_host_blackjack:
+    cmp qword [host_pts], 20
+    je match_draw
+    jmp challenger_victory
 
-.bind_error:
-    mov rsi, msg_error
-    call print_str
-    call exit
+draw_card:
+    push rbx
+    push rcx
+    push rdx
 
-.listen_error:
-    mov rsi, msg_listen
-    call print_str
-    call exit
+    mov rbx, [deck_pointer]
+    movzx rax, byte [shuffled_deck + rbx]
+    inc [deck_pointer]
 
-.accept_error:
-    mov rsi, msg_accept
-    call print_str
-    jmp .main_loop
+    push rax
+    push rdx
+    xor rdx, rdx
+    mov rbx, 4
+    div rbx
+    mov bl, [face_symbols + rax]
+    pop rdx
 
-; Игровой процесс
-play_game:
-    push rbp
-    mov rbp, rsp
-
-    ; Сервер начинает первым
-    mov rsi, msg_connect
-    call print_str
-
-.server_move:
-    ; Ход сервера
-    mov rsi, msg_turn
-    call print_str
-
-    ; Чтение ввода сервера
-    mov rsi, buffer
-    call input_keyboard
-
-    ; Проверка на выход
-    cmp byte [buffer], 'q'
-    je .server_quit
-
-    ; Проверка формата ввода
-    cmp byte [buffer + 1], 0
-    je .server_move
-
-    ; Отправка хода клиенту
-    mov rdi, [client_fd]
-    mov rsi, buffer
-    mov rdx, 3
-    mov rax, SYS_WRITE
-    syscall
-
-    ; Получение результата от клиента
-    mov rdi, [client_fd]
-    mov rsi, buffer
-    mov rdx, 2
-    mov rax, SYS_READ
-    syscall
-
-    cmp rax, 0
-    jle .client_disconnected
-
-    ; Вывод результата своего хода
-    cmp byte [buffer], 'H'
-    je .server_hit
-    cmp byte [buffer], 'M'
-    je .server_miss
-
-.server_hit:
-    mov rsi, msg_hit
-    call print_str
-    jmp .wait_client_move
-
-.server_miss:
-    mov rsi, msg_miss
-    call print_str
-
-.wait_client_move:
-    ; Ожидание хода клиента
-    mov rsi, msg_wait_opp
-    call print_str
-
-    ; Получение хода от клиента
-    mov rdi, [client_fd]
-    mov rsi, buffer
-    mov rdx, 3
-    mov rax, SYS_READ
-    syscall
-
-    cmp rax, 0
-    jle .client_disconnected
-
-    cmp byte [buffer], 'q'
-    je .client_quit
-
-    ; Вывод хода клиента
-    mov rsi, msg_opp_move
-    call print_str
-    mov rsi, buffer
-    call print_str
-    mov rsi, newline
-    call print_str
-
-    ; Отправка результата клиенту
-    mov rsi, buffer
-    mov byte [rsi], 'M'
-    mov byte [rsi + 1], 0
-    mov rdi, [client_fd]
-    mov rdx, 2
-    mov rax, SYS_WRITE
-    syscall
-
-    ; Возврат к ходу сервера
-    jmp .server_move
-
-.server_quit:
-    ; Сервер завершает работу
-    mov rsi, msg_quit
-    call print_str
-    jmp .game_end
-
-.client_quit:
-    ; Клиент хочет выйти из игры
-    mov rsi, msg_client_quit
-    call print_str
-    jmp .game_end
-
-.client_disconnected:
-    ; Клиент неожиданно отключился
-    mov rsi, msg_client_quit
-    call print_str
-
-.game_end:
-    ; Закрытие клиентского соединения
-    mov rdi, [client_fd]
     cmp rdi, 0
-    je .done
-    mov rax, SYS_CLOSE
-    syscall
-    mov qword [client_fd], 0
+    je .store_challenger
+    jmp .store_host
 
-.done:
-    mov rsp, rbp
-    pop rbp
+.store_challenger:
+    mov rdx, [challenger_count]
+    mov [challenger_cards + rdx], bl
+    inc [challenger_count]
+    jmp .store_complete
+.store_host:
+    mov rdx, [host_count]
+    mov [host_cards + rdx], bl
+    inc [host_count]
+.store_complete:
+    pop rax
+
+    movzx rcx, byte [card_strength + rax]
+
+    cmp rdi, 0
+    je .update_challenger
+    jmp .update_host
+.update_challenger:
+    add [challenger_pts], rcx
+    jmp .complete
+.update_host:
+    add [host_pts], rcx
+.complete:
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+
+shuffle_cards:
+    mov rcx, 51
+.shuffle_loop:
+    push rcx
+    call generate_random
+    xor rdx, rdx
+    mov rbx, 52
+    div rbx
+    pop rcx
+    mov al, [shuffled_deck + rcx]
+    mov ah, [shuffled_deck + rdx]
+    mov [shuffled_deck + rcx], ah
+    mov [shuffled_deck + rdx], al
+    loop .shuffle_loop
+    ret
+
+generate_random:
+    push rbx
+    push rcx
+    push rdx
+    mov rax, [rand_seed]
+    mov rbx, 6364136223846793005
+    mul rbx
+    mov rcx, 1442695040888963407
+    add rax, rcx
+    mov [rand_seed], rax
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+
+show_card_sequence:
+    push rbx
+    push rcx
+    push rsi
+
+    xor rbx, rbx
+.sequence_loop:
+    cmp rbx, rcx
+    jge .sequence_end
+
+    mov al, [rsi + rbx]
+    mov [rdi], al
+    inc rdi
+    mov byte [rdi], ' '
+    inc rdi
+
+    inc rbx
+    jmp .sequence_loop
+.sequence_end:
+    pop rsi
+    pop rcx
+    pop rbx
+    ret
+
+display_hidden_state:
+    mov rdi, buffer_out
+
+    mov dword [rdi], 'Host'
+    mov dword [rdi+4], ':   '
+    add rdi, 8
+
+    mov al, [host_cards]
+    mov [rdi], al
+    inc rdi
+    mov dword [rdi], ' [H]'
+    add rdi, 4
+
+    mov byte [rdi], 10
+    inc rdi
+
+    mov dword [rdi], 'Play'
+    mov dword [rdi+4], 'er: '
+    add rdi, 8
+    mov rax, [challenger_pts]
+    call convert_number
+    mov byte [rdi], ' '
+    inc rdi
+
+    mov rsi, challenger_cards
+    mov rcx, [challenger_count]
+    call show_card_sequence
+
+    mov byte [rdi], 10
+    inc rdi
+
+    mov dword [rdi], '1-TA'
+    mov dword [rdi+4], 'KE 2'
+    mov dword [rdi+8], '-HOL'
+    mov byte [rdi+12], 'D'
+    add rdi, 13
+
+    mov byte [rdi], 10
+    inc rdi
+
+    mov byte [rdi], 0
+
+    mov rsi, buffer_out
+    call transmit_output
+    ret
+
+append_final_details:
+    mov byte [rdi], 10
+    inc rdi
+
+    mov dword [rdi], 'Play'
+    mov dword [rdi+4], 'er: '
+    add rdi, 8
+    mov rax, [challenger_pts]
+    call convert_number
+    mov byte [rdi], ' '
+    inc rdi
+    mov rsi, challenger_cards
+    mov rcx, [challenger_count]
+    call show_card_sequence
+
+    mov byte [rdi], 10
+    inc rdi
+
+    mov dword [rdi], 'Host'
+    mov dword [rdi+4], ':   '
+    add rdi, 8
+    mov rax, [host_pts]
+    call convert_number
+    mov byte [rdi], ' '
+    inc rdi
+    mov rsi, host_cards
+    mov rcx, [host_count]
+    call show_card_sequence
+
+    mov byte [rdi], 10
+    inc rdi
+
+    mov byte [rdi], 0
+    ret
+
+message_busted:
+    mov dword [rdi], 'OVER'
+    mov byte [rdi+4], '!'
+    add rdi, 5
+    jmp append_final_details
+message_victory:
+    mov dword [rdi], 'WINN'
+    mov dword [rdi+4], 'ER!'
+    add rdi, 8
+    jmp append_final_details
+message_defeat:
+    mov dword [rdi], 'LOST'
+    mov byte [rdi+4], '!'
+    add rdi, 5
+    jmp append_final_details
+message_draw:
+    mov dword [rdi], 'DRAW'
+    add rdi, 4
+    jmp append_final_details
+
+convert_number:
+    push rbx
+    push rdx
+    mov rbx, 10
+    xor rdx, rdx
+    div rbx
+    add al, '0'
+    add dl, '0'
+    mov [rdi], al
+    inc rdi
+    mov [rdi], dl
+    inc rdi
+    pop rdx
+    pop rbx
+    ret
+
+transmit_output:
+    push rdi
+    push rax
+    push rdx
+    push rcx
+    mov rdi, rsi
+    call measure_text
+    mov rdx, rax
+    mov rax, SYS_WRITE
+    mov rdi, [game_socket]
+    syscall
+    pop rcx
+    pop rdx
+    pop rax
+    pop rdi
+    ret
+
+output_message:
+    push rdi
+    push rax
+    push rdx
+    push rcx
+    mov rdi, rsi
+    call measure_text
+    mov rdx, rax
+    mov rax, SYS_WRITE
+    mov rdi, 1
+    syscall
+    pop rcx
+    pop rdx
+    pop rax
+    pop rdi
+    ret
+
+measure_text:
+    xor rax, rax
+.scan_loop:
+    cmp byte [rdi + rax], 0
+    je .scan_done
+    inc rax
+    jmp .scan_loop
+.scan_done:
     ret
