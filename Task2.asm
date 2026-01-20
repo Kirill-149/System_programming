@@ -17,12 +17,18 @@ PROT_WRITE  = 0x2
 MAP_SHARED  = 0x01
 MAP_ANONY   = 0x20
 
-COUNT       = 637
+COUNT       = 5
 ARRAY_SIZE  = 4 + (COUNT * 4)
 
 section '.data' writeable
     msg_start       db "Массив заполнен случайными числами.", 10, 0
     msg_start_len   = $ - msg_start
+
+    msg_array       db "Массив: ", 0
+    msg_array_len   = $ - msg_array
+
+    msg_space       db " ", 0
+    msg_space_len   = $ - msg_space
 
     msg_task0:
         db "[Процесс 1] Самая редкая цифра: ", 0
@@ -89,6 +95,39 @@ _start:
         mov rdi, STDOUT
         lea rsi, [msg_start]
         mov rdx, msg_start_len
+        syscall
+
+        ; ВЫВОД МАССИВА НА ЭКРАН
+        mov rax, SYS_WRITE
+        mov rdi, STDOUT
+        lea rsi, [msg_array]
+        mov rdx, msg_array_len
+        syscall
+
+        mov rsi, [data_ptr]
+        mov rcx, COUNT
+    print_array:
+        mov eax, [rsi]
+        push rsi
+        push rcx
+        call print_num
+
+        mov rax, SYS_WRITE
+        mov rdi, STDOUT
+        lea rsi, [msg_space]
+        mov rdx, msg_space_len
+        syscall
+
+        pop rcx
+        pop rsi
+        add rsi, 4
+        dec rcx
+        jnz print_array
+
+        mov rax, SYS_WRITE
+        mov rdi, STDOUT
+        lea rsi, [newline]
+        mov rdx, 1
         syscall
 
         ; 3. Форки
