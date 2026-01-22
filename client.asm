@@ -192,7 +192,7 @@ print_string:
     ret
 
 strlen:
-    ; String length at rdi
+    ; Длина строки в rdi
     xor rax, rax
 strlen_loop:
     cmp byte [rdi + rax], 0
