@@ -36,7 +36,7 @@ section '.data' writeable
     sum            dq 0
     average_int    dq 0
     median_int     dq 0
-    median_frac    dq 0  ; Добавляем для хранения дробной части медианы
+    median_frac    dq 0
 
     host_address:
         dw AF_INET
@@ -91,10 +91,13 @@ server_loop:
     mov qword [sum], 0
 
     ; Очищаем массив чисел
-    mov rdi, numbers
-    mov rcx, MAX_NUMBERS
+    mov rdi, numbers          ; Адрес начала массива
+    mov rcx, MAX_NUMBERS      ; Количество элементов
     xor rax, rax
-    rep stosq
+.clear_array_loop:
+    mov [rdi], rax
+    add rdi, 8
+    loop .clear_array_loop
 
     ; Отправляем приглашение
     mov rsi, prompt_msg
@@ -115,15 +118,34 @@ read_input:
     mov byte [input_buffer + rax], 0
 
     ; Ищем символ '#' - конец ввода
-    mov rdi, input_buffer
+    mov rdi, input_buffer     ; Начало буфера
+    mov rcx, rax              ; Длина прочитанных данных
     mov al, '#'
-    mov rcx, 256
-    repne scasb
-    jnz parse_and_continue
+    xor rbx, rbx              ; Флаг найден ли символ
+.search_hash_loop:
+    cmp rcx, 0
+    je .search_done
+    cmp [rdi], al
+    je .hash_found
+    inc rdi
+    dec rcx
+    jmp .search_hash_loop
 
+.hash_found:
+    mov rbx, 1                ; Устанавливаем флаг "найдено"
+
+.search_done:
+    test rbx, rbx             ; Проверяем флаг
+    jnz found_hash            ; Если нашли '#', обрабатываем
+
+    ; Если не нашли, парсим числа и продолжаем чтение
+    mov rsi, input_buffer
+    call parse_numbers
+    jmp read_input
+
+found_hash:
     ; Нашли '#', обрабатываем ввод
-    dec rdi
-    mov byte [rdi], 0
+    mov byte [rdi], 0         ; Заменяем '#' на 0
 
     ; Парсим числа
     mov rsi, input_buffer
@@ -155,7 +177,7 @@ parse_numbers:
 
     xor r12, r12        ; текущее число
     xor bl, bl          ; флаг отрицательности
-    xor r13b, r13b      ; флаг: было ли хоть одна цифра в текущем числе
+    xor r13b, r13b      ; флаг: была ли хоть одна цифра в текущем числе
 
 .parse_loop:
     mov al, [rsi]
@@ -321,7 +343,7 @@ calculate_average:
 
     ; Делим на количество (знаковое деление)
     mov rcx, [num_count]
-    cqo             ; Расширяем до 128 бит
+    cqo             ; Знаковое расширение rax -> rdx:rax
     idiv rcx        ; rax = (sum * 100) / count
 
     mov [average_int], rax
@@ -337,7 +359,7 @@ calculate_average:
     ret
 
 calculate_median:
-    ; Вычисляет медианное значение - ИСПРАВЛЕНО для четного количества
+    ; Вычисляет медианное значение
     push rbx
     push rcx
     push rdx
